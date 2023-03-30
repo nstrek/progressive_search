@@ -1,7 +1,58 @@
-from typing import Union, List, Callable, Dict
-import numpy as np
 import itertools
+import numpy as np
+from typing import Callable, List, Union
 
+
+# Потомки его тоже гиперкубы
+class Hypercube:
+    def __init__(self, resolution_degree: int, start_point: np.array, parent=None):
+        self.resolution_degree = resolution_degree
+        self.start_point = start_point
+        self.parent = parent
+
+        self.side = 2 ** resolution_degree - 1
+        self.dim = self.start_point.shape[0]
+
+        self.node_order_graph = None
+        self.set_node_order_graph()
+
+    def set_node_order_graph(self):
+        self.node_order_graph = []
+
+        schema_string = '{0:0' + str(self.dim) + 'b}'
+
+        for node_number in range(2 ** self.dim):
+            binary_mask = schema_string.format(node_number)
+
+            point = np.array(self.start_point)
+
+            for index, flag in enumerate(binary_mask):
+                # print(f'{index=} {flag=}')
+                if flag == '1':
+                    point[index] += self.side
+
+            self.node_order_graph.append(point)
+
+    def split(self):
+        for node in self.node_order_graph:
+            yield Hypercube(resolution_degree=self.resolution_degree - 1,
+                            start_point=np.around((node + self.start_point) / 2).astype(int),
+                            parent=self)
+
+    def compute_curr_depth(self):
+        res = 0
+        if self.parent is None:
+            return res
+        else:
+            parent = self.parent
+            while parent is not None:
+                res += 1
+                parent = parent.parent
+
+            return res
+
+
+# TODO: посчитать число невычисленных точек, а не только количество коллизий
 
 class Varianta:  # or Variable
     def __init__(self, name: str, var_type: str,
@@ -87,7 +138,7 @@ class Integer(Varianta):
 
         self.max_resolution_degree = degree
 
-        self.array = np.arange(start=self.left_boundary, stop=self.right_boundary + 1, dtype=np.int)
+        self.array = np.arange(start=self.left_boundary, stop=self.right_boundary + 1).astype(int)
 
     def __next__(self):
         pass
@@ -99,60 +150,116 @@ class String(Varianta):
 
 
 class ProgressiveGridSearch:
-    def __init__(self, func: Callable, stop_criterion: Union[str, Callable], params: List[Varianta],
-                 max_resolution_degree: int = 10):
-        # self.t0  # Время запуска чтобы можно было останавливать по времени.
-        pass
-        # для целых переменных брать степень такую, что 2^(degree+1) > (right - left). То есть не будем перебирать все значения, а можно флаг поставить режима
-        # И этот флаг ставить в Varianta, как и max_resolution_degree для вещественных (там можно сменить на язык чисел после запятой, а можно и не менять)
-        # Нет, все-таки придется брать degree: 2^degree > (right - left) и фильтровать узлы больше right
+    def __init__(self, func: Callable, params: List, stop_criterion: Callable, max_resolution_degree: int = 10):
+        self.func = func
+        self.params = params
+        self.stop_criterion = stop_criterion
+        self.max_resolution_degree = max_resolution_degree
+
+        self.number_of_nodes = 2 ** max_resolution_degree
+
+        self.dim = 0
+        self.grids = []
+
+        for param in self.params:
+            if type(param) is Real:
+                self.dim += 1
+                grid = np.linspace(param.left_boundary, param.right_boundary, num=self.number_of_nodes)
+                self.grids.append(grid)
+            elif type(param) is Integer:
+                self.dim += 1
+                grid = np.arange(param.left_boundary, param.left_boundary + self.number_of_nodes)
+                # Временно игнорирую right_boundary, мб буду if'ом фильтровать при вычислении
+                self.grids.append(grid)
+
+        self.mask = np.zeros([self.number_of_nodes] * self.dim).astype(bool)
+        self.values = np.full_like(self.mask, fill_value=np.nan).astype(float)
+
+        self.nodes_queue = None
+        self.curr_hypercube = None
+        self.number_of_functions_calls = None
+        # self.grid = np.zeros([2 ** self.max_resolution_degree] * self.dim)
+        # self.grid_by_row = np.zeros([self.dim, 2 ** self.max_resolution_degree])
+
+    def __iter__(self):
+        hypercube = Hypercube(resolution_degree=self.max_resolution_degree, start_point=np.zeros(self.dim).astype(int))
+
+        # self.generator = (node for node in (curr_hc.node_order_graph for curr_hc in self.append_generator(hypercube)))
+        self.generator = (curr_hc.node_order_graph for curr_hc in self.append_generator(hypercube))
+        self.number_of_functions_calls = 0
+
+        # print('__iter__')
+
+        self.nodes_queue = iter([])
+
+        return self
+
+    def __next__(self):
+        # print('__next__')
+        # for point in self.generator:
+        # print('__next__ loop iteration')
+        # yield from hypercube.node_order_graph
+        try:
+            node_indexes = next(self.nodes_queue)
+            if self.mask[node_indexes] is True:
+                return next(self)
+
+            node_point = []
+
+            for k, index in enumerate(node_indexes):
+                node_point.append(self.grids[k][index])
+
+            node_point = np.array(node_point)
+
+            if self.curr_hypercube.resolution_degree != 1 and np.any(node_point % 2 == 0) and np.sum(node_point) % 2 == 0 and np.sum(node_point) != 0:
+                return next(self)
+
+            b = node_point - self.curr_hypercube.start_point
+
+            if self.curr_hypercube.resolution_degree != 1 and (b[0] % 2 == 0 or b[1] % 2 == 0) and (node_point[0] != 0 and node_point[1] != 0):
+                return next(self)
+
+            self.mask[node_indexes] = True
+            self.number_of_functions_calls += 1
+
+            return node_point, node_indexes
+        except StopIteration:
+            self.nodes_queue = iter(next(self.generator))
+            return next(self)
+
+        # return next(self.generator)
+
+    def append_generator(self, hypercube: Hypercube):
+        self.curr_hypercube = hypercube
+        lst = [hypercube]
+
+        for elem in lst:
+            # print(elem, 'elem')
+
+            yield elem
+
+            if elem.resolution_degree == 1:
+                continue
+
+            for sub_elem in elem.split():
+                lst.append(sub_elem)
+
+    def optimize(self):
+        for point in self:
+            # print(point)
+            print(point)
+
+            if point is None:
+                break
+            pass
 
 
-# Критерии останова:
-# 1) По времени
-# 2) По изменению значения меньше, чем на дельту за итерацию
-# 3) По количеству вычислений
-
-def f(alpha, degree):  # Обязательно именованные аргументы
-    return alpha ** degree
-
-
-# timer_criterion = lambda t0: t0 > 60 * 60
-#
-# solution = ProgressiveGridSearch(func=f, stop_criterion=timer_criterion,
-#                                  params=[Real('alpha', left_boundary=-5.5, right_boundary=5.7),
-#                                          Real('beta', left_boundary=3.0, right_boundary=15.98),
-#                                          Integer('degree', left_boundary=-3, right_boundary=9),
-#                                          String('model', necessary_values=['direct', 'reverse'])])
+# TODO: Счетчик коллизий и пропущенных узлов
 
 
 if __name__ == '__main__':
-    r = Real('rrr', left_boundary=-5.0, right_boundary=5.0)
-    t = Real('ttt', left_boundary=0.0, right_boundary=16.0)
+    s = ProgressiveGridSearch(lambda x: x,
+                              params=[Integer('k', left_boundary=-5, right_boundary=10)],
+                              stop_criterion=None)
 
-    variables = [r, t]
-
-    # for node in r:
-    #     print(r)
-
-    # for var in variables:
-    #
-    #
-    # for vec in itertools.product(variables)
-
-    for elem in r:
-        print(elem)
-
-    print('\n\n\n')
-
-    iter(t)
-    iter(r)
-
-    for _ in range(4):
-        r_nodes = next(r)
-        t_nodes = next(t)
-
-        for vec in itertools.product(*[r_nodes, t_nodes]):
-            print(vec)
-
-
+    s.optimize()

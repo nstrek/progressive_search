@@ -1,17 +1,16 @@
-import itertools
+from random import shuffle
 import numpy as np
 from typing import Callable, List, Union
 
 
-# Потомки его тоже гиперкубы
 class Hypercube:
     def __init__(self, resolution_degree: int, start_point: np.array, parent=None):
         self.resolution_degree = resolution_degree
-        self.start_point = start_point
+        self.start_indexes = start_point
         self.parent = parent
 
         self.side = 2 ** resolution_degree - 1
-        self.dim = self.start_point.shape[0]
+        self.dim = self.start_indexes.shape[0]
 
         self.node_order_graph = None
         self.set_node_order_graph()
@@ -24,7 +23,7 @@ class Hypercube:
         for node_number in range(2 ** self.dim):
             binary_mask = schema_string.format(node_number)
 
-            point = np.array(self.start_point)
+            point = np.array(self.start_indexes)
 
             for index, flag in enumerate(binary_mask):
                 # print(f'{index=} {flag=}')
@@ -36,7 +35,7 @@ class Hypercube:
     def split(self):
         for node in self.node_order_graph:
             yield Hypercube(resolution_degree=self.resolution_degree - 1,
-                            start_point=np.around((node + self.start_point) / 2).astype(int),
+                            start_point=np.around((node + self.start_indexes) / 2).astype(int),
                             parent=self)
 
     def compute_curr_depth(self):
@@ -178,30 +177,27 @@ class ProgressiveGridSearch:
         self.nodes_queue = None
         self.curr_hypercube = None
         self.number_of_functions_calls = None
-        # self.grid = np.zeros([2 ** self.max_resolution_degree] * self.dim)
-        # self.grid_by_row = np.zeros([self.dim, 2 ** self.max_resolution_degree])
+
+        # number_of_last_level_hypercubes = 2 ** (self.dim * self.max_resolution_degree)
+        #
+        # self.meta_optimizer = ProgressiveGridSearch(func=self.func,
+        #                                             params=[Integer('index', left_boundary=0, right_boundary=number_of_last_level_hypercubes - 1)],
+        #                                             stop_criterion=None,
+        #                                             max_resolution_degree=self.max_resolution_degree)
 
     def __iter__(self):
         hypercube = Hypercube(resolution_degree=self.max_resolution_degree, start_point=np.zeros(self.dim).astype(int))
 
-        # self.generator = (node for node in (curr_hc.node_order_graph for curr_hc in self.append_generator(hypercube)))
         self.generator = (curr_hc.node_order_graph for curr_hc in self.append_generator(hypercube))
         self.number_of_functions_calls = 0
 
-        # print('__iter__')
-
         self.nodes_queue = iter([])
-
         return self
 
     def __next__(self):
-        # print('__next__')
-        # for point in self.generator:
-        # print('__next__ loop iteration')
-        # yield from hypercube.node_order_graph
         try:
             node_indexes = next(self.nodes_queue)
-            if self.mask[node_indexes] is True:
+            if self.mask[tuple(node_indexes)].item() is True:
                 return next(self)
 
             node_point = []
@@ -211,15 +207,16 @@ class ProgressiveGridSearch:
 
             node_point = np.array(node_point)
 
-            if self.curr_hypercube.resolution_degree != 1 and np.any(node_point % 2 == 0) and np.sum(node_point) % 2 == 0 and np.sum(node_point) != 0:
-                return next(self)
+            if self.curr_hypercube.resolution_degree != self.max_resolution_degree and self.curr_hypercube.resolution_degree != 1:
+                if np.any(node_indexes % 2 == 0) and np.sum(node_indexes) % 2 == 0 and np.sum(node_point) != 0:
+                    return next(self)
 
-            b = node_point - self.curr_hypercube.start_point
+                b = node_indexes - self.curr_hypercube.start_indexes
 
-            if self.curr_hypercube.resolution_degree != 1 and (b[0] % 2 == 0 or b[1] % 2 == 0) and (node_point[0] != 0 and node_point[1] != 0):
-                return next(self)
+                if np.any(b % 2 == 0) and np.all(node_indexes != 0):
+                    return next(self)
 
-            self.mask[node_indexes] = True
+            self.mask[tuple(node_indexes)] = True
             self.number_of_functions_calls += 1
 
             return node_point, node_indexes
@@ -227,31 +224,24 @@ class ProgressiveGridSearch:
             self.nodes_queue = iter(next(self.generator))
             return next(self)
 
-        # return next(self.generator)
-
     def append_generator(self, hypercube: Hypercube):
-        self.curr_hypercube = hypercube
         lst = [hypercube]
 
-        for elem in lst:
-            # print(elem, 'elem')
+        while lst:
 
-            yield elem
+            self.curr_hypercube = lst.pop(0)
+            yield self.curr_hypercube
 
-            if elem.resolution_degree == 1:
+            if self.curr_hypercube.resolution_degree == 1:
                 continue
 
-            for sub_elem in elem.split():
+            for sub_elem in self.curr_hypercube.split():
                 lst.append(sub_elem)
 
+    # Здесь будет расположен сам цикл поиска минимума/максимума функции на сетке с критериями останова
     def optimize(self):
         for point in self:
-            # print(point)
-            print(point)
-
-            if point is None:
-                break
-            pass
+            raise NotImplementedError
 
 
 # TODO: Счетчик коллизий и пропущенных узлов
